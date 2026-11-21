@@ -193,57 +193,185 @@ O antes vulneravel usa o protocolo em texto claro e o `client.py` sem validacao
 criptografica. O depois protegido usa TLS e pode bloquear a falsificacao ARP por
 entradas permanentes.
 
-### Gerar o certificado na VM servidor
+### 1. Preparar as VMs
 
-Na VM servidor, gere uma Autoridade Certificadora local e um certificado cujo IP
-deve corresponder ao IP real do servidor:
-
-Os arquivos necessarios ja foram gerados neste projeto na pasta `certs/` para o IP
-`192.168.56.10`. Para regenerar ou adaptar o IP, execute:
+O projeto deve estar disponivel nas tres VMs. Execute os comandos seguintes
+em cada VM Linux:
 
 ```bash
+sudo apt update
+sudo apt install -y python3 python3-pip openssl git
+git clone https://github.com/FelipeBurg/T3_Lab_Redes.git
+cd T3_Lab_Redes
+```
+
+Substitua os IPs abaixo quando a topologia estiver configurada com outros
+enderecos:
+
+```text
+VM servidor: 192.168.56.10
+VM cliente:  192.168.56.11
+VM atacante: 192.168.56.12
+```
+
+Confirme os IPs e descubra o nome da interface:
+
+```bash
+ip -br addr
+```
+
+### 2. Usar os certificados ja preparados
+
+Os certificados existentes em `certs/` foram preparados para o servidor
+`192.168.56.10`. Use-os diretamente somente se esse for o IP real da VM servidor.
+
+Na VM servidor, os arquivos necessarios sao:
+
+```text
+certs/server.crt
+certs/server.key
+certs/ca.crt
+```
+
+Na VM cliente, os arquivos necessarios sao:
+
+```text
+src/secure_client.py
+certs/ca.crt
+```
+
+O arquivo `server.key` e secreto e deve permanecer somente na VM servidor.
+Nunca copie `server.key` ou `ca.key` para a VM cliente. O cliente recebe
+`server.crt` automaticamente durante o handshake TLS; ele nao precisa receber
+esse certificado separadamente.
+
+Na VM servidor, valide a correspondencia entre o certificado e a chave privada:
+
+```bash
+openssl x509 -noout -modulus -in certs/server.crt | openssl sha256
+openssl rsa -noout -modulus -in certs/server.key | openssl sha256
+```
+
+Os dois valores retornados devem ser iguais.
+
+Valide a cadeia e confira o IP no certificado:
+
+```bash
+openssl verify -CAfile certs/ca.crt certs/server.crt
+openssl x509 -in certs/server.crt -noout -subject -issuer -dates \
+  -ext subjectAltName
+```
+
+O primeiro comando deve terminar com `certs/server.crt: OK`.
+O campo `subjectAltName` deve conter o IP real do servidor:
+
+```text
+IP Address:192.168.56.10
+```
+
+### 3. Gerar novos certificados
+
+Gere novos certificados se o IP da VM servidor for diferente de
+`192.168.56.10`, ou se a pasta `certs/` estiver ausente. Execute na VM servidor,
+a partir da raiz do projeto:
+
+```bash
+IP_SERVIDOR=192.168.56.10
 mkdir -p certs
+
 openssl genrsa -out certs/ca.key 4096
-openssl req -x509 -new -nodes -key certs/ca.key \
-  -sha256 -days 365 -out certs/ca.crt \
+openssl req -x509 -new -nodes \
+  -key certs/ca.key \
+  -sha256 -days 365 \
+  -out certs/ca.crt \
   -subj "/CN=SimpleChat-Lab-CA"
 
 openssl genrsa -out certs/server.key 2048
-openssl req -new -key certs/server.key -out certs/server.csr \
-  -subj "/CN=192.168.56.10"
+openssl req -new \
+  -key certs/server.key \
+  -out certs/server.csr \
+  -subj "/CN=${IP_SERVIDOR}"
 
-cat > certs/server.ext <<'EOF'
-subjectAltName=IP:192.168.56.10
+cat > certs/server.ext <<EOF
+subjectAltName=IP:${IP_SERVIDOR}
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth
 EOF
 
-openssl x509 -req -in certs/server.csr \
-  -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial \
-  -out certs/server.crt -days 365 -sha256 \
+openssl x509 -req \
+  -in certs/server.csr \
+  -CA certs/ca.crt \
+  -CAkey certs/ca.key \
+  -CAcreateserial \
+  -out certs/server.crt \
+  -days 365 -sha256 \
   -extfile certs/server.ext
 ```
 
-Copie `certs/ca.crt` para a VM cliente. O arquivo `server.key` permanece secreto na
-VM servidor.
+Depois de gerar, repita as verificacoes da etapa anterior.
 
-### Executar o servidor protegido
-
-Na VM servidor:
+O certificado foi criado por uma Autoridade Certificadora local destinada ao
+laboratorio. Portanto, a VM cliente precisa receber somente `ca.crt`.
+Se a VM servidor estiver acessivel por SSH, execute na VM cliente:
 
 ```bash
+scp usuario@192.168.56.10:/caminho/T3_Lab_Redes/certs/ca.crt .
+mkdir -p certs
+mv ca.crt certs/ca.crt
+```
+
+Substitua `usuario`, `192.168.56.10` e `/caminho/T3_Lab_Redes` pelos valores
+reais. Confirme na VM cliente:
+
+```bash
+ls -l certs/ca.crt
+```
+
+### 4. Executar o servidor protegido
+
+Na VM servidor, a partir da raiz do projeto:
+
+```bash
+sudo ufw allow 5000/tcp
 python3 src/secure_server.py 0.0.0.0 5000 \
   certs/server.crt certs/server.key
 ```
 
-Na VM cliente:
+Saida esperada:
+
+```text
+Servidor TLS escutando em 0.0.0.0:5000
+```
+
+Nao feche esse terminal enquanto o teste estiver sendo executado.
+
+### 5. Executar o cliente protegido
+
+Na VM cliente, a partir da raiz do projeto:
+
+Antes do cliente Python, teste a conexao TLS com o OpenSSL:
+
+```bash
+openssl s_client -connect 192.168.56.10:5000 \
+  -CAfile certs/ca.crt -verify_ip 192.168.56.10
+```
+
+O resultado deve conter `Verification: OK`. Se o servidor estiver acessivel,
+pressione Ctrl+C para sair. A verificacao somente funciona se o servidor protegido
+ja estiver em execucao.
+
+Em seguida, execute:
 
 ```bash
 python3 src/secure_client.py 192.168.56.10 5000 ceci grebbio2027 certs/ca.crt
 ```
 
-O cliente verifica a cadeia do certificado e o IP servido. Assim, um atacante que
-apresente um certificado falso nao sera aceito. O sniffer fara a captura, mas nao
-conseguira apresentar credenciais ou mensagens em texto claro.
+Para testar o segundo usuario:
+
+```bash
+python3 src/secure_client.py 192.168.56.10 5000 felipe inter2027 certs/ca.crt
+```
 
 Os usuarios registrados no servidor TLS sao:
 
@@ -252,8 +380,15 @@ ceci   / grebbio2027
 felipe / inter2027
 ```
 
-As senhas nao ficam armazenadas em texto claro no `secure_server.py`: somente seus
-valores SHA-256 sao mantidos em memoria para comparacao do login.
+No cliente, digite uma mensagem e pressione Enter. Para encerrar:
+
+```text
+/quit
+```
+
+O cliente verifica a cadeia da CA, o IP no `subjectAltName`, a validade do
+certificado e o TLS 1.2 ou superior. Assim, um atacante que apresente um
+certificado falso nao sera aceito.
 
 ### Defesa adicional contra ARP Spoofing
 
