@@ -2,6 +2,9 @@ import socket
 import sys
 import threading
 
+# LEGADO: esta variante usa um proxy TCP manual.
+# A fase ativa deste trabalho deve ser executada com src/arp_spoof.py.
+
 def handle_client_to_server(client_socket, server_socket, client_addr):
     """Lê as mensagens do cliente, modifica se necessário, e envia ao servidor."""
     try:
