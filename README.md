@@ -1,6 +1,10 @@
 # Interceptacao e Defesa de um Protocolo de Aplicacao
 
-Este projeto implementa as **Fases 1 e 2** do trabalho de Laboratorio de Redes de Computadores. A Fase 1 aborda a escuta passiva (sniffer), enquanto a Fase 2 aborda a interceptacao ativa por meio de ARP Spoofing.
+Este projeto implementa as **Fases 1, 2 e 3** do trabalho de Laboratorio de Redes de Computadores:
+
+- Fase 1: escuta passiva e demonstracao de quebra de confidencialidade;
+- Fase 2: interceptacao ativa por ARP Spoofing e alteracao controlada de mensagens;
+- Fase 3: defesa com TLS, autenticacao do servidor por certificado e protecao das credenciais no servidor.
 
 - um cliente e um servidor de chat simples;
 - um protocolo de aplicacao em texto claro;
@@ -73,7 +77,7 @@ ACK MSG\n
 BYE\n
 ```
 
-Credenciais de teste definidas no servidor:
+Credenciais de teste definidas no servidor inseguro:
 
 ```text
 alice / senha123
@@ -158,6 +162,31 @@ O sniffer deve mostrar eventos semelhantes a:
 Ao pressionar `Ctrl+C`, o script envia pacotes ARP reais e desativa o encaminhamento
 IP, restaurando o caminho normal da rede.
 
+## Parte 2 - Interceptacao ativa
+
+Na VM atacante, execute o ARP Spoofing com o IP da VM cliente e da VM servidor:
+
+```bash
+sudo python3 src/arp_spoof.py eth0 192.168.56.11 192.168.56.10
+```
+
+Com o trafego atraves da VM atacante, o sniffer continua mostrando credenciais e mensagens
+em texto claro. Para a evidencia controlada, o proxy legado pode ser usado em paralelo:
+
+```bash
+python3 src/proxy.mitm.py 5001 192.168.56.10 5000
+```
+
+Depois, aponte o cliente para a porta `5001` da VM proxy:
+
+```bash
+python3 client.py 192.168.56.12 5001 alice senha123
+```
+
+A classe `proxy.mitm.py` intercepta linhas `MSG`, registra o texto original e substitui
+o conteudo por uma mensagem controlada antes de encaminha-lo ao servidor. A sessao
+aceita varias conexoes por meio de threads; erros de uma conexao nao encerram o proxy.
+
 ## Parte 3 - Defesa
 
 O antes vulneravel usa o protocolo em texto claro e o `client.py` sem validacao
@@ -168,6 +197,9 @@ entradas permanentes.
 
 Na VM servidor, gere uma Autoridade Certificadora local e um certificado cujo IP
 deve corresponder ao IP real do servidor:
+
+Os arquivos necessarios ja foram gerados neste projeto na pasta `certs/` para o IP
+`192.168.56.10`. Para regenerar ou adaptar o IP, execute:
 
 ```bash
 mkdir -p certs
@@ -206,12 +238,22 @@ python3 src/secure_server.py 0.0.0.0 5000 \
 Na VM cliente:
 
 ```bash
-python3 src/secure_client.py 192.168.56.10 5000 alice senha123 certs/ca.crt
+python3 src/secure_client.py 192.168.56.10 5000 ceci grebbio2027 certs/ca.crt
 ```
 
 O cliente verifica a cadeia do certificado e o IP servido. Assim, um atacante que
 apresente um certificado falso nao sera aceito. O sniffer fara a captura, mas nao
 conseguira apresentar credenciais ou mensagens em texto claro.
+
+Os usuarios registrados no servidor TLS sao:
+
+```text
+ceci   / grebbio2027
+felipe / inter2027
+```
+
+As senhas nao ficam armazenadas em texto claro no `secure_server.py`: somente seus
+valores SHA-256 sao mantidos em memoria para comparacao do login.
 
 ### Defesa adicional contra ARP Spoofing
 
@@ -249,4 +291,40 @@ Para documentar a defesa no relatorio, execute novamente o ataque e compare:
 2. Depois: o sniffer mostra apenas pacotes TLS/Handshake; o proxy nao decodifica
    nem modifica o conteudo.
 3. Com entradas ARP permanentes: os pacotes falsos do atacante sao ignorados.
+
+### Evidencias antes/depois
+
+Para comprovar a defesa no Wireshark:
+
+1. Capture a porta TCP 5000 antes da TLS.
+2. Identifique os pacotes `TCP` que contem `LOGIN`, `MSG` e as respostas `OK LOGIN`/`ACK MSG`.
+3. Capture a mesma porta com o servidor e o cliente TLS.
+4. Identifique o `Client Hello`, `Server Hello`, o certificado e os registros `Application Data`.
+5. Confirme que o conteudo nao aparece em texto claro.
+6. Execute novamente o ARP Spoofing e registre o erro de validacao do certificado no cliente.
+
+Capturas recomendadas:
+
+```text
+fase1_texto_claro.pcapng
+fase2_mitm_texto_claro.pcapng
+fase3_tls_sem_mitm.pcapng
+fase3_tls_com_mitm.pcapng
+```
+
+### Analise da defesa e deteccao
+
+- **Sniffing:** mitigado pela confidencialidade do TLS. Metadados, como IPs, portas e tamanho aproximado dos pacotes, continuam visiveis.
+- **MITM por ARP:** mitigado pela autenticacao do servidor e pela integridade da sessao TLS.
+- **Adulteracao:** rejeitada pela integridade criptografica. Se houver alteracao em um registro TLS, o handshake ou a conexao sera encerrado.
+- **Certificado falso:** detectado no cliente por `SSLCertVerificationError`, por exemplo cadeia nao confiavel, IP/hostname divergente ou certificado expirado.
+- **Replay:** TLS inclui protecoes contra repeticao de registros; o trabalho nao implementa uma politica explicita de expiracao das credenciais ou nonce em nivel de aplicacao.
+- **Ataques fora do escopo:** TLS nao protege contra malware na VM cliente/servidor, roubo da chave privada, pessoa maliciosa autorizada ou vazamento dos dados antes da criptografia.
+
+### Limites da prova
+
+A configuracao usa uma Autoridade Certificadora local para o laboratorio. Em producao,
+o certificado deveria ser emitido por uma Autoridade confiavel ou distribuido por um
+processo seguro. O modo X509 estrito foi desabilitado no cliente somente para compatibilidade
+com o ambiente da VM; a cadeia, o hostname/IP e o TLS 1.2 continuam sendo validados.
 

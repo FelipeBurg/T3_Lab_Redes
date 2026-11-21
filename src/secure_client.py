@@ -19,6 +19,8 @@ def main():
 
     context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=ca_file)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.check_hostname = True
+    context.verify_flags &= ~ssl.VERIFY_X509_STRICT
 
     with socket.create_connection((host, port), timeout=10) as raw_socket:
         with context.wrap_socket(raw_socket, server_hostname=host) as tls_socket:
